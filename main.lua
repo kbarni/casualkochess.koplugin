@@ -40,6 +40,9 @@ local CheckersAI = require("checkersai")
 local FoxHoundGame = require("foxhoundgame")
 local FoxHoundBoard = require("foxhoundboard")
 local FoxHoundAI = require("foxhoundai")
+local ReversiGame = require("reversigame")
+local ReversiBoard = require("reversiboard")
+local ReversiAI = require("reversiai")
 local Timer = require("timer")
 local Uci = require("uci")
 local GoldfishUCI = require("goldfishuci")
@@ -104,6 +107,7 @@ local TOOLBAR_PADDING = 4
 local MODE_CHESS = "chess"
 local MODE_CHECKERS = "checkers"
 local MODE_FOXHOUND = "foxhound"
+local MODE_REVERSI = "reversi"
 
 local Kochess = FrameContainer:extend{
     name = "casualkochess",
@@ -270,7 +274,9 @@ function Kochess:startGame()
 end
 
 function Kochess:isChessMode()
-    return self.game_mode ~= MODE_CHECKERS and self.game_mode ~= MODE_FOXHOUND
+    return self.game_mode ~= MODE_CHECKERS
+        and self.game_mode ~= MODE_FOXHOUND
+        and self.game_mode ~= MODE_REVERSI
 end
 
 function Kochess:isCheckersMode()
@@ -281,6 +287,10 @@ function Kochess:isFoxHoundMode()
     return self.game_mode == MODE_FOXHOUND
 end
 
+function Kochess:isReversiMode()
+    return self.game_mode == MODE_REVERSI
+end
+
 function Kochess:saveGameState()
     if self:isFoxHoundMode() then
         self:saveFoxHoundGameState()
@@ -288,6 +298,10 @@ function Kochess:saveGameState()
     end
     if self:isCheckersMode() then
         self:saveCheckersGameState()
+        return
+    end
+    if self:isReversiMode() then
+        self:saveReversiGameState()
         return
     end
     local pgn = self.game.pgn and self.game.pgn() or ""
@@ -304,6 +318,8 @@ function Kochess:clearSavedGameStates()
     self:setSetting("saved_checkers_running", false)
     self:setSetting("saved_foxhound_state", "")
     self:setSetting("saved_foxhound_running", false)
+    self:setSetting("saved_reversi_state", "")
+    self:setSetting("saved_reversi_running", false)
 end
 
 function Kochess:restoreGameState()
@@ -313,6 +329,10 @@ function Kochess:restoreGameState()
     end
     if self:isCheckersMode() then
         self:restoreCheckersGameState()
+        return
+    end
+    if self:isReversiMode() then
+        self:restoreReversiGameState()
         return
     end
     local pgn = self:getSetting("saved_pgn", "")
@@ -404,6 +424,37 @@ function Kochess:restoreFoxHoundGameState()
 
     self.timer.currentPlayer = self.game.turn()
     self.running = self:getSetting("saved_foxhound_running", false)
+
+    self:updatePgnLog()
+    self:updateTimerDisplay()
+    self:updatePlayerDisplay()
+end
+
+function Kochess:saveReversiGameState()
+    if not (self.game and self.game.export_state) then return end
+    self:setSetting("saved_reversi_state", self.game:export_state())
+    self:setSetting("saved_reversi_time_white", self.timer:getRemainingTime(Chess.WHITE))
+    self:setSetting("saved_reversi_time_black", self.timer:getRemainingTime(Chess.BLACK))
+    self:setSetting("saved_reversi_running", self.running)
+end
+
+function Kochess:restoreReversiGameState()
+    local state = self:getSetting("saved_reversi_state", nil)
+    if type(state) ~= "table" then return end
+
+    local ok = self.game.load_state and self.game:load_state(state)
+    if not ok then
+        self:setSetting("saved_reversi_state", "")
+        return
+    end
+
+    local tw = self:getSetting("saved_reversi_time_white", nil)
+    local tb = self:getSetting("saved_reversi_time_black", nil)
+    if tw then self.timer.time[Chess.WHITE] = tw end
+    if tb then self.timer.time[Chess.BLACK] = tb end
+
+    self.timer.currentPlayer = self.game.turn()
+    self.running = self:getSetting("saved_reversi_running", false)
 
     self:updatePgnLog()
     self:updateTimerDisplay()
@@ -651,6 +702,8 @@ function Kochess:initializeGameLogic()
         self.game = FoxHoundGame:new()
     elseif self:isCheckersMode() then
         self.game = CheckersGame:new()
+    elseif self:isReversiMode() then
+        self.game = ReversiGame:new()
     else
         self.game = Chess:new()
     end
@@ -678,7 +731,8 @@ end
 
 function Kochess:initializeBoard(board_h)
     local BoardClass = self:isFoxHoundMode() and FoxHoundBoard
-        or (self:isCheckersMode() and CheckersBoard or ChessBoard)
+        or (self:isCheckersMode() and CheckersBoard
+        or (self:isReversiMode() and ReversiBoard or ChessBoard))
     self.board = BoardClass:new{
         game          = self.game,
         width         = self.full_width,
@@ -835,6 +889,13 @@ function Kochess:detectOpening()
 end
 
 local function formatEval(self)
+    if self:isReversiMode() then
+        if self.game and self.game.score then
+            local s = self.game.score()
+            return string.format("Black: %d | White: %d", s.b, s.w)
+        end
+        return ""
+    end
     if self:isCheckersMode() or self:isFoxHoundMode() then return "" end
     local mate = self.last_mate
     if mate ~= nil then
@@ -882,8 +943,8 @@ end
 
 function Kochess:createPgnLogWidget(txt, w, h) return TextBoxWidget:new{ use_xtext=true, text=txt, face=Font:getFace(self.notation_font, self.notation_size), scroll=true, width=w, height=h, dialog=self } end
 function Kochess:createToolbarButton(icon, w, h, cb) return ButtonWidget:new{ icon=icon, width=w, icon_width=w, icon_height=h, padding=0, margin=0, bordersize=0, callback=cb } end
-function Kochess:handleUndoMove(all) self:stopUCI(); self.timer:stop(); if all then while self.game.undo() do end else self.game.undo() end; self.board:updateBoard(); self:updatePgnLog(); UIManager:setDirty(self, "ui"); self.timer:start() end
-function Kochess:handleRedoMove(all) self:stopUCI(); self.timer:stop(); if all then while self.game.redo() do end else self.game.redo() end; self.board:updateBoard(); self:updatePgnLog(); UIManager:setDirty(self, "ui"); self.timer:start() end
+function Kochess:handleUndoMove(all) self:stopUCI(); self.timer:stop(); if all then while self.game.undo() do end else self.game.undo() end; self.board:updateBoard(); self:updatePgnLog(); self:updateEvalLine(); UIManager:setDirty(self, "ui"); self.timer:start() end
+function Kochess:handleRedoMove(all) self:stopUCI(); self.timer:stop(); if all then while self.game.redo() do end else self.game.redo() end; self.board:updateBoard(); self:updatePgnLog(); self:updateEvalLine(); UIManager:setDirty(self, "ui"); self.timer:start() end
 
 function Kochess:onMoveExecuted(move)
     if self:isFoxHoundMode() and not move then
@@ -932,6 +993,10 @@ function Kochess:launchNextMove()
         if not self.game.is_human(self.game.turn()) then self:launchCheckersAI() end
         return
     end
+    if self:isReversiMode() then
+        if not self.game.is_human(self.game.turn()) then self:launchReversiAI() end
+        return
+    end
     if not (self.engine and self.engine.state.uciok and not self.game.is_human(self.game.turn())) then return end
 
     local is_cvc = not self.game.is_human(Chess.WHITE) and not self.game.is_human(Chess.BLACK)
@@ -968,6 +1033,15 @@ function Kochess:launchCurrentComputerMove()
         self:launchCheckersAI()
         return
     end
+    if self:isReversiMode() then
+        if self.game.is_human(self.game.turn()) then return end
+        self.running = true
+        self.timer.currentPlayer = self.game.turn()
+        self.timer:start()
+        self:updateTimerDisplay()
+        self:launchReversiAI()
+        return
+    end
     if not (self.engine and self.engine.state.uciok and not self.game.is_human(self.game.turn())) then return end
 
     self.running = true
@@ -987,6 +1061,23 @@ function Kochess:launchCheckersAI()
         if depth == 0 then depth = 6 end
         depth = math.max(1, math.min(6, depth))
         local move = CheckersAI.bestMove(self.game, depth, self.blunder_chance or 0)
+        if move then
+            local played = self.game:move{ from = move.from, to = move.to }
+            if played then self.board:handleGameMove(played) end
+        end
+    end)
+end
+
+function Kochess:launchReversiAI()
+    if self.reversi_busy or self.game.is_human(self.game.turn()) then return end
+    self.reversi_busy = true
+    UIManager:scheduleIn(0.2, function()
+        self.reversi_busy = false
+        if not self:isReversiMode() or self.game.is_human(self.game.turn()) then return end
+        local moves = self.game:moves()
+        if #moves == 0 then return end
+        local depth = tonumber(self.engine_depth) or 4
+        local move = ReversiAI.bestMove(self.game, depth, self.blunder_chance or 0)
         if move then
             local played = self.game:move{ from = move.from, to = move.to }
             if played then self.board:handleGameMove(played) end
@@ -1054,6 +1145,7 @@ function Kochess:stopUCI()
     self.engine_busy = false
     self.checkers_busy = false
     self.foxhound_busy = false
+    self.reversi_busy = false
     if self.engine and not self.engine.closed and self.engine.state.uciok then self.engine.send("stop") end
 end
 
@@ -1113,6 +1205,8 @@ function Kochess:resetGame()
         self:setSetting("saved_foxhound_state", "")
     elseif self:isCheckersMode() then
         self:setSetting("saved_checkers_state", "")
+    elseif self:isReversiMode() then
+        self:setSetting("saved_reversi_state", "")
     else
         self:setSetting("saved_pgn", "")
     end
@@ -1130,14 +1224,23 @@ function Kochess:showGameOverDialog(result, reason)
         else
             winner = (result == "1-0") and _("White") or _("Black")
         end
-        if self:isCheckersMode() or self:isFoxHoundMode() then
+        if self:isReversiMode() then
+            local s = self.game.score()
+            text = string.format(_("%s wins! (Black: %d, White: %d)"), winner, s.b, s.w)
+        elseif self:isCheckersMode() or self:isFoxHoundMode() then
             text = string.format(_("%s Wins!"), winner)
         else
             text = string.format(_("Checkmate! %s wins."), winner)
         end
     else
+        if self:isReversiMode() then
+            local s = self.game.score()
+            text = string.format(_("Draw! (Black: %d, White: %d)"), s.b, s.w)
+        end
         local label
-        if not reason then
+        if text then
+            -- Reversi draw already handled above.
+        elseif not reason then
             text = _("Draw!")
         elseif reason == "Stalemate" then
             label = _("Stalemate")
