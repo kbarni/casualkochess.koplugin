@@ -296,7 +296,7 @@ function SettingsWidget:buildDifficultyGroup()
             skill_level   = 0,
             engine_depth  = 2,
             engine_movetime = 1,
-            blunder_chance  = 0.10,
+            blunder_chance  = 0.15,
         },
         {
             name          = _("Intermediate"),
